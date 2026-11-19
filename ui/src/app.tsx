@@ -435,7 +435,7 @@ function Gallery({ state }: { state: State }) {
   // Dictate or Translate, on a button, on nothing. Only a text field or a
   // list keeps its arrows (the gallery itself already handles its own).
   const turnBy = React.useRef((step: number) => {});
-  turnBy.current = (step) => cards.length > 1 && turn((front + step + cards.length) % cards.length);
+  turnBy.current = (step) => !state.peek && cards.length > 1 && turn((front + step + cards.length) % cards.length);
   React.useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -499,6 +499,7 @@ function Gallery({ state }: { state: State }) {
           autoplay={false}
           background={state.dark ? "#0b0b0f" : "#efeff1"}
           clear={!!state.peek}
+          stacked={!!state.peek}
           ariaLabel={translating ? "Translation presets" : "Dictation presets"}
           recompose
           style={{ minHeight: 0, aspectRatio: "auto" }}

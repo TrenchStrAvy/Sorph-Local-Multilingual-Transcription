@@ -38,6 +38,9 @@ export interface WarpCarouselProps {
   cards?: WarpCard[];
   /** Sorph: no backdrop and no glow, only the cards; changing it fades the backdrop out or in. */
   clear?: boolean;
+  /** Sorph: the cards as a deck (front card flat, the rest fanned behind it, no lens stretch); turning it off
+   *  spreads the deck out into the ring over 0.6 s. The ring can't be turned while it is a deck. */
+  stacked?: boolean;
   /** Controlled front card index. Pair it with onIndexChange. */
   index?: number;
   /** Front card when uncontrolled. */
@@ -202,6 +205,30 @@ function poseAt(q0: number): Pose {
   const tp = Math.min(1, (a - G.qA) / LP);
   const psi = (2 * tp ** 3 - 3 * tp ** 2 + 1) * G.psiA + (tp ** 3 - 2 * tp ** 2 + tp) * LP * dps * bP + (-2 * tp ** 3 + 3 * tp ** 2) * Math.PI;
   return [s * (Hx - half * Math.cos(psi)), Hz - half * Math.sin(psi), s * psi];
+}
+
+/** Sorph: the startup peek's deck. A card q steps from the front sits a little to its side, further back and
+ *  turned a touch, fanning out left and right of the front card; |q| = 2 is the deck's last visible card. */
+function stackPose(q: number): Pose {
+  const a = Math.min(Math.abs(q), 2.05);
+  const s = q < 0 ? -1 : 1;
+  return [s * 40 * a, 40 * a, s * 0.21 * a];
+}
+
+/** How much a deck card behind the front is dimmed (0 front, up to 0.5 at the back). */
+function stackDim(q: number): number {
+  return Math.min(Math.abs(q), 2) * 0.25;
+}
+
+/** cubic-bezier(0.22, 1, 0.36, 1): the dashboard's ease-out, solved for x. */
+function easeOut(x: number): number {
+  const bz = (t: number, p1: number, p2: number) => 3 * (1 - t) * (1 - t) * t * p1 + 3 * (1 - t) * t * t * p2 + t * t * t;
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 24; i++) {
+    const m = (lo + hi) / 2;
+    if (bz(m, 0.22, 0.36) < x) lo = m; else hi = m;
+  }
+  return bz((lo + hi) / 2, 1, 1);
 }
 
 /* Spin curve: ring progress over one autoplay step, in reference frames (30 fps). */
@@ -642,6 +669,7 @@ uniform sampler2DArray uTex;
 uniform vec2 uRes;
 uniform float uUnit;
 uniform vec4 uPose[8];
+uniform float uDim[8]; // Sorph: per card, how much darker (the peek's deck)
 uniform vec3 uGlowCol[8];
 uniform vec3 uGlowShape[8];
 uniform vec3 uBg;
@@ -683,7 +711,7 @@ float sdRound(vec2 p, vec2 b, float r){
 }
 
 // premultiplied colour of one card along a source ray
-vec4 shadeCard(vec4 pose, vec2 ps, float fx, float fy, out float depth){
+vec4 shadeCard(vec4 pose, float dim, vec2 ps, float fx, float fy, out float depth){
   depth = 1e9;
   if (pose.w < 0.0) return vec4(0.0);
   float k = ps.x / F;
@@ -710,13 +738,13 @@ vec4 shadeCard(vec4 pose, vec2 ps, float fx, float fy, out float depth){
   vec2 uv = vec2(s / CW + 0.5, 0.5 - y / CH);
   vec4 tex = textureGrad(uTex, vec3(uv, pose.w), vec2(fs / CW, 0.0), vec2(0.0, fyc / CH));
   depth = t;
-  return vec4(tex.rgb, 1.0) * cov;
+  return vec4(tex.rgb * (1.0 - dim), 1.0) * cov;
 }
 
 vec4 scene(vec2 ps, float fx, float fy, int base){
   vec4 col[4];
   float dep[4];
-  for (int i = 0; i < 4; i++) col[i] = shadeCard(uPose[base + i], ps, fx, fy, dep[i]);
+  for (int i = 0; i < 4; i++) col[i] = shadeCard(uPose[base + i], uDim[base + i], ps, fx, fy, dep[i]);
   // sort by depth (4 entries)
   for (int i = 0; i < 3; i++)
     for (int j = 0; j < 3; j++)
@@ -849,7 +877,7 @@ function createGL(canvas: HTMLCanvasElement): GLState | null {
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   const tex = gl.createTexture()!;
   const loc: Record<string, WebGLUniformLocation | null> = {};
-  for (const n of ["uTex", "uRes", "uUnit", "uPose", "uGlowCol", "uGlowShape", "uBg", "uWarp", "uWide", "uMix", "uClear"]) loc[n] = gl.getUniformLocation(prog, n);
+  for (const n of ["uTex", "uRes", "uUnit", "uPose", "uGlowCol", "uGlowShape", "uBg", "uWarp", "uWide", "uMix", "uClear", "uDim"]) loc[n] = gl.getUniformLocation(prog, n);
   const aniso = gl.getExtension("EXT_texture_filter_anisotropic");
   (tex as unknown as { aniso: unknown }).aniso = aniso;
   return { gl, prog, tex, loc, layers: 0, texW: 0 };
@@ -1051,6 +1079,7 @@ export function WarpCarousel({
   className,
   style,
   clear = false,
+  stacked = false,
 }: WarpCarouselProps) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
@@ -1114,6 +1143,23 @@ export function WarpCarousel({
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
   }, [clear]);
+  // Sorph: deck (0) → ring (1), eased over 0.6 s
+  const ringAmt = React.useRef(stacked ? 0 : 1);
+  React.useEffect(() => {
+    const to = stacked ? 0 : 1;
+    const from = ringAmt.current;
+    if (from === to) return;
+    const start = performance.now();
+    let raf = 0;
+    const step = () => {
+      const t = Math.min(1, (performance.now() - start) / 600);
+      ringAmt.current = from + (to - from) * easeOut(t);
+      handles.current.draw();
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [stacked]);
 
   const lastIndex = React.useRef(current);
   const request = React.useCallback((next: number) => {
@@ -1209,14 +1255,24 @@ export function WarpCarousel({
       const a = Math.abs(pose[0]);
       const t = Math.min(1, Math.max(0, (a - 40) / 290));
       // 326: a resting side card's inner edge is 218 units from the centre on screen, at 0.67 perspective scale
-      const out = (wide - 1) * 326 * t * t * (3 - 2 * t);
+      const out = (wide - 1) * 326 * t * t * (3 - 2 * t) * ringAmt.current;
       return { pose: [pose[0] + (pose[0] < 0 ? -out : out), pose[1], pose[2]], light: pose };
     };
     const poseSet = (P: number) => {
       const ids = Array.from({ length: N }, (_, c) => ({ c, q: mod(c - P + N / 2, N) - N / 2 }))
         .sort((a, b) => Math.abs(a.q) - Math.abs(b.q))
         .slice(0, 4);
-      return ids.map(({ c, q }) => (Math.abs(q) > 2.05 ? { pose: [0, 0, 0] as Pose, layer: -1 } : { ...widen(poseAt(q)), layer: c }));
+      const r = ringAmt.current;
+      return ids.map(({ c, q }) => {
+        if (Math.abs(q) > 2.05) return { pose: [0, 0, 0] as Pose, layer: -1, dim: 0 };
+        if (r >= 1) return { ...widen(poseAt(q)), layer: c, dim: 0 };
+        // Sorph: between the peek's deck and the ring
+        const ring = poseAt(q);
+        const deck = stackPose(q);
+        const blend = (k: number) => deck[k] + (ring[k] - deck[k]) * r;
+        const pose: Pose = [blend(0), blend(1), blend(2)];
+        return { ...widen(pose), layer: c, dim: stackDim(q) * (1 - r) };
+      });
     };
 
     const L = live.current;
@@ -1256,11 +1312,13 @@ export function WarpCarousel({
     };
 
     const poseArr = new Float32Array(32);
+    const dimArr = new Float32Array(8);
     const glowArr = new Float32Array(24);
     const shapeArr = new Float32Array(24);
-    const fill = (set: { pose: Pose; layer: number; light?: Pose }[], off: number) => {
+    const fill = (set: { pose: Pose; layer: number; light?: Pose; dim?: number }[], off: number) => {
       set.forEach((s, i) => {
         const j = off + i;
+        dimArr[j] = s.dim || 0;
         poseArr[j * 4] = s.pose[0];
         poseArr[j * 4 + 1] = s.pose[1];
         poseArr[j * 4 + 2] = s.pose[2];
@@ -1295,7 +1353,8 @@ export function WarpCarousel({
         gl.uniform3fv(loc.uGlowCol, glowArr);
         gl.uniform3fv(loc.uGlowShape, shapeArr);
         gl.uniform3f(loc.uBg, bg[0] / 255, bg[1] / 255, bg[2] / 255);
-        gl.uniform1f(loc.uWarp, Math.max(0, Math.min(1, warp)));
+        gl.uniform1f(loc.uWarp, Math.max(0, Math.min(1, warp)) * ringAmt.current); // Sorph: no lens on the deck
+        gl.uniform1fv(loc.uDim, dimArr);
         gl.uniform1f(loc.uWide, wide);
         gl.uniform1f(loc.uMix, mix);
         gl.uniform1f(loc.uClear, clearAmt.current);
@@ -1440,6 +1499,7 @@ export function WarpCarousel({
   /* ---------------- interaction ---------------- */
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (seconds !== undefined || e.button > 0) return;
+    if (stacked || ringAmt.current < 1) return; // Sorph: a click on the deck spreads it out, it doesn't turn it
     const L = live.current;
     e.currentTarget.setPointerCapture?.(e.pointerId);
     L.mode = "drag";
@@ -1496,6 +1556,7 @@ export function WarpCarousel({
   };
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    if (stacked || ringAmt.current < 1) return;
     e.preventDefault();
     request(lastIndex.current + (e.key === "ArrowRight" ? 1 : -1));
   };

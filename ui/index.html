@@ -20,7 +20,13 @@
     background: var(--bg); color: var(--ink);
     font: 13px/1.3 "SF Pro Text", -apple-system, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none; cursor: default;
+    transition: background-color 0.4s cubic-bezier(0.22, 1, 0.36, 1);
   }
+  /* the startup peek: no page and no header, only the cards and the language
+     bar over the desktop; touched, everything fades in together */
+  html.peek body { background: transparent; }
+  .bar-top > * { transition: opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
+  html.peek .bar-top > * { opacity: 0; pointer-events: none; }
   button, select, input { font: inherit; color: inherit; }
   button { border: 0; background: none; cursor: pointer; padding: 0; }
 

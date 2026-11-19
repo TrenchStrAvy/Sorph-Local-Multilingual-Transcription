@@ -53,6 +53,32 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual((size.width, size.height), (830, 420))
         self.assertFalse(self.dash.window.styleMask() & (1 << 3))  # resizable
 
+    def test_startup_peek_then_full_window_when_touched(self) -> None:
+        d = self.dash
+        d._show_quietly()                   # shown at startup
+        d._ready()
+        self.assertTrue(d.state()["peek"])
+        self.assertFalse(d.window.hasShadow())
+        self.assertTrue(d.window.standardWindowButton_(0).isHidden())
+        d.handle({"type": "engage"})        # a card or a field was touched
+        self.assertFalse(d.peek)
+        self.assertFalse(d.state()["peek"])
+        self.assertFalse(d.window.standardWindowButton_(0).isHidden())
+
+    def test_peek_closes_itself_and_the_next_open_is_full(self) -> None:
+        d = self.dash
+        d._show_quietly()
+        d._ready()
+        d._close_peek()                     # what the timer ends with
+        self.assertFalse(d.window.isVisible())
+        self.assertFalse(d.peek)
+        self.assertTrue(d.window.hasShadow())
+
+    def test_opened_from_the_menu_bar_is_never_a_peek(self) -> None:
+        d = self.dash
+        d._ready()                          # not shown at startup
+        self.assertFalse(d.state()["peek"])
+
     def test_loading_then_ready(self) -> None:
         d = self.dash
         self.assertEqual(d.state()["phase"], "loading")

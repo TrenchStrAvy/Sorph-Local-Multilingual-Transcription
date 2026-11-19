@@ -58,6 +58,7 @@ interface State {
   status: string;
   settings: Settings | null;
   openSettings?: number; // changes each time the menu bar asks for the settings
+  peek?: boolean; // the startup peek: no backdrop, gone by itself unless touched
 }
 
 declare global {
@@ -335,6 +336,9 @@ function App() {
   React.useEffect(() => {
     document.documentElement.dataset.theme = state.dark ? "dark" : "light";
   }, [state.dark]);
+  React.useEffect(() => {
+    document.documentElement.classList.toggle("peek", !!state.peek);
+  }, [state.peek]);
   return state.phase === "ready" ? <Gallery state={state} /> : <Splash state={state} />;
 }
 
@@ -467,7 +471,13 @@ function Gallery({ state }: { state: State }) {
   const speakIn = (code: string) => use({ speak: code, write: !translating ? "" : code === write ? speak : write });
 
   return (
-    <div className={"app" + (open ? " open" : "")}>
+    <div className={"app" + (open ? " open" : "")} onPointerDownCapture={(e) => {
+      // the startup peek: touching a card, a field, a switch or a menu keeps
+      // the dashboard and turns it into the full window
+      const el = e.target as HTMLElement | null;
+      if (state.peek && el && el.closest && el.closest(".gallery, .dock, .icon, .panel, .menu, button, input, select"))
+        send({ type: "engage" });
+    }}>
       <header className="bar-top">
         <b>Sorph</b>
         {state.version && <span className="version">{state.version}</span>}
@@ -488,6 +498,7 @@ function Gallery({ state }: { state: State }) {
           onIndexChange={turn}
           autoplay={false}
           background={state.dark ? "#0b0b0f" : "#efeff1"}
+          clear={!!state.peek}
           ariaLabel={translating ? "Translation presets" : "Dictation presets"}
           recompose
           style={{ minHeight: 0, aspectRatio: "auto" }}

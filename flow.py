@@ -616,9 +616,6 @@ class FlowApp:
         if self.overlay:
             # the language card in the middle says which; no word under the orb
             self.overlay.set_note(self._note())
-        if getattr(self, "toast", None) is not None:
-            # big, in the middle of the screen: the note under the orb is hard to see
-            self.toast.show(code, self.translate_to or "")
         if self.menubar:
             self.menubar.set_language(code)
             self.menubar.set_status("loading model…")
@@ -638,6 +635,17 @@ class FlowApp:
                 self.menubar.set_status(self.status_text())
             self._prepare_translation()     # the new pair may need the model
         threading.Thread(target=_switch, daemon=True).start()
+
+    def _show_language_card(self, code):
+        """The language just picked with a quick key, as its card in the
+        middle of the screen; not while the dashboard is up (its gallery
+        already shows the card)."""
+        if getattr(self, "toast", None) is None:
+            return
+        dashboard = self.window
+        if dashboard is not None and getattr(dashboard, "is_visible", None) and dashboard.is_visible():
+            return
+        self.toast.show(code, self.translate_to or "")
 
     def _note(self, text=""):
         if not text and self._route():
@@ -666,6 +674,7 @@ class FlowApp:
             code = settings.quick_keys_by_keycode().get(vk)
             if code:
                 self.set_language(code)
+                self._show_language_card(code)
                 return
         if key == HOTKEY:
             self._hotkey_down = True

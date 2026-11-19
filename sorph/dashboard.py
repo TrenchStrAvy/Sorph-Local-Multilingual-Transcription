@@ -9,6 +9,12 @@ it as a card. The gear holds the settings, ◐ the look (auto, light, dark).
 Closing the window only hides it: menu bar → Open Sorph, or a click on
 Sorph in the Dock, brings it back.
 
+After the startup reveal the gallery first shows as a "peek": no page and
+no window buttons, only the cards and the language bar over the desktop,
+for PEEK_SEC, and then it fades away by itself, so nobody has to close it
+at every start. Touching a card, a field, a switch or a menu during the
+peek keeps it: it turns into the full window.
+
 The page is ui/index.html + ui/dist/dashboard.js (built once from ui/src
 with `npm run build`; an install needs no Node). It runs in a WKWebView:
 Python pushes the whole state as JSON (window.sorph.push), the page posts
@@ -27,6 +33,7 @@ import time
 
 import objc
 from AppKit import (
+    NSAnimationContext,
     NSAppearance,
     NSApplication,
     NSBackingStoreBuffered,
@@ -35,8 +42,9 @@ from AppKit import (
     NSWindow,
 )
 from Foundation import (NSDistributedNotificationCenter, NSMakeRect, NSObject,
-                        NSURL)
+                        NSRunLoop, NSRunLoopCommonModes, NSTimer, NSURL)
 from PyObjCTools import AppHelper
+from Quartz import CAMediaTimingFunction
 from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
 
 import languages
@@ -50,6 +58,9 @@ SHOW_NOTIFICATION = "com.localflow.show-window"   # posted by the launcher
 GRIP_H = 52                   # top strip of the page that drags the window
 GRIP_CLEAR = 100              # its right end is left to the page's two buttons
 REVEAL_SEC = 3.7              # the glass reveal, start to bare logo
+PEEK_SEC = 6.0                # the startup peek, then it fades away
+PEEK_FADE = 0.45
+ENGAGE_SEC = 0.4              # peek → full window, page and window together
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the project folder
 PAGE = os.path.join(ROOT, "ui", "index.html")
 LOGO = os.path.join(ROOT, "ui", "dist", "orb.png")
@@ -164,6 +175,9 @@ class Dashboard(NSObject, protocols=[
         self.loading = {"phase": "loading", "caption": "starting…",
                         "progress": 0.05, "error": ""}
         self.shown_at = 0.0
+        self.started_quietly = False    # shown by show() at startup: peek after
+        self.peek = False
+        self.peek_timer = None
         self._build()
         return self
 
@@ -218,6 +232,7 @@ class Dashboard(NSObject, protocols=[
         dark = is_dark()
         r, g, b = BACKGROUND[dark]
         self.window.setBackgroundColor_(
+            NSColor.clearColor() if self.peek else
             NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1))
         self.window.setAppearance_(NSAppearance.appearanceNamed_(
             "NSAppearanceNameDarkAqua" if dark else "NSAppearanceNameAqua"))
@@ -233,6 +248,7 @@ class Dashboard(NSObject, protocols=[
             state["logo"] = _logo_uri()
             state["version"] = version()
         state.update(self.loading)
+        state["peek"] = self.peek
         if self.cb is not None and self.loading["phase"] == "ready":
             state.update(page_state(self.cb["language"](),
                                     self.cb["translate_to"](),
@@ -266,6 +282,9 @@ class Dashboard(NSObject, protocols=[
             # mode it looks the same as "dark", so a three-step round had
             # one click that seemed to do nothing.)
             settings.set_theme("light" if is_dark() else "dark")
+            return
+        if kind == "engage":            # touched during the peek: keep it
+            self._end_peek()
             return
         if kind == "ready" or self.cb is None:
             return
@@ -360,6 +379,7 @@ class Dashboard(NSObject, protocols=[
     @objc.python_method
     def _show_quietly(self):
         self.shown_at = time.time()
+        self.started_quietly = True
         self.window.orderFrontRegardless()
 
     def open(self):
@@ -368,6 +388,8 @@ class Dashboard(NSObject, protocols=[
 
     @objc.python_method
     def _open(self):
+        self._end_peek()                # asked for: the full window
+        self.window.setAlphaValue_(1.0)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self.window.makeKeyAndOrderFront_(None)
         self._push()
@@ -413,7 +435,97 @@ class Dashboard(NSObject, protocols=[
     @objc.python_method
     def _ready(self):
         self.loading["phase"] = "ready"
+        if self.started_quietly and self.window.isVisible():
+            self._start_peek()
         self._push()
+
+    # -- the startup peek
+
+    @objc.python_method
+    def _later(self, seconds, fn):
+        """A timer that also fires while a menu or a drag holds the run loop."""
+        if self.peek_timer is not None:
+            self.peek_timer.invalidate()
+        self.peek_timer = NSTimer.timerWithTimeInterval_repeats_block_(
+            seconds, False, lambda _t: fn())
+        NSRunLoop.mainRunLoop().addTimer_forMode_(self.peek_timer,
+                                                  NSRunLoopCommonModes)
+
+    @objc.python_method
+    def _chrome(self, on: bool):
+        """The window's own look: buttons, frame, shadow (off for the peek)."""
+        w = self.window
+        for kind in (0, 1):                     # close, minimise
+            button = w.standardWindowButton_(kind)
+            if button is not None:
+                button.setHidden_(not on)
+        w.setOpaque_(False)
+        w.setHasShadow_(on)
+        self._paint_window()
+
+    @objc.python_method
+    def _start_peek(self):
+        self.peek = True
+        self._chrome(False)
+        self._later(PEEK_SEC, self._fade_peek)
+
+    @objc.python_method
+    def _fade_peek(self):
+        if not self.peek:
+            return
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.currentContext().setDuration_(PEEK_FADE)
+        self.window.animator().setAlphaValue_(0.0)
+        NSAnimationContext.endGrouping()
+        self._later(PEEK_FADE + 0.05, self._close_peek)
+
+    @objc.python_method
+    def _close_peek(self):
+        if not self.peek:
+            return                      # touched while it faded: it stays
+        self.window.orderOut_(None)
+        self.peek = False               # the next open is the full window
+        self.window.setAlphaValue_(1.0)
+        self._chrome(True)
+        self._push()
+
+    @objc.python_method
+    def _end_peek(self):
+        """Touched, or opened from the menu bar: the full dashboard, as one
+        fade. The page fades its backdrop, header and glow in over
+        ENGAGE_SEC; the window buttons fade in alongside and the shadow
+        comes on at once. The window's own background is set when the fade
+        is over: by then the page paints the very same colour over it."""
+        if self.peek_timer is not None:
+            self.peek_timer.invalidate()
+            self.peek_timer = None
+        if not self.peek:
+            return
+        self.peek = False
+        w = self.window
+        w.setAlphaValue_(1.0)
+        w.setHasShadow_(True)
+        self._push()                    # the page starts its fade
+        buttons = [b for b in (w.standardWindowButton_(0),
+                               w.standardWindowButton_(1)) if b is not None]
+        for b in buttons:
+            b.setAlphaValue_(0.0)
+            b.setHidden_(False)
+        NSAnimationContext.beginGrouping()
+        context = NSAnimationContext.currentContext()
+        context.setDuration_(ENGAGE_SEC)
+        context.setTimingFunction_(
+            CAMediaTimingFunction.functionWithControlPoints____(0.22, 1.0, 0.36, 1.0))
+        for b in buttons:
+            b.animator().setAlphaValue_(1.0)
+        NSAnimationContext.endGrouping()
+        self._later(ENGAGE_SEC + 0.05, lambda: self._chrome(True))
+
+    @objc.python_method
+    def is_visible(self) -> bool:
+        """On screen (also during the peek). Safe enough from any thread:
+        a single flag read."""
+        return bool(self.window.isVisible())
 
     def refresh(self):
         AppHelper.callAfter(self._push)

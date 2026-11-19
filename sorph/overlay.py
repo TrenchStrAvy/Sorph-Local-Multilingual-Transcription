@@ -135,11 +135,13 @@ ENERGY = {
     "glass": 1.00,                  # refraction / reflection / rim strength
 }
 
-# The ribbons while dictating to a Muxpane agent (the answer goes to that
-# agent, not the field in front). Placeholder until picked on the preview page.
+# While dictating to a Muxpane agent (the answer goes to that agent, not the
+# field in front) the orb splits: across a seam that turns with the ribbons,
+# one half keeps Sorph's colours and the other turns the accent, and the rim
+# takes the accent too. "Split" on the preview page in deep pink, picked 2026-11-19.
 MUXPANE_ENERGY = {
-    "hues": (150.0, 172.0, 128.0),
-    "sat": 0.45,
+    "accent": 322.0,                # deep pink, degrees; the second tone is +18
+    "sat": 0.72,
 }
 
 # How strongly the ribbons answer the voice, 0 = calm .. 100 = very lively.
@@ -247,6 +249,9 @@ float u_lock;
 float3 u_c1;
 float3 u_c2;
 float3 u_c3;
+float u_mode;
+float3 u_a1;
+float3 u_a2;
 #pragma declaration
 float lf_ph(float t, float k) { return fmod(t * k, 6.2831853); }
 float3x3 lf_rotY(float a) { float c = cos(a), s = sin(a); return float3x3(float3(c, 0.0, -s), float3(0.0, 1.0, 0.0), float3(s, 0.0, c)); }
@@ -275,7 +280,7 @@ float3 lf_env(float3 d) {
     float panel = smoothstep(0.55, 0.95, dot(d, normalize(float3(0.6, 0.35, 0.7)))) * 0.35;
     return base + float3(1.0, 0.98, 0.95) * soft * 0.35 + float3(0.8, 0.85, 1.0) * panel * 0.5;
 }
-float3 lf_march(float3 ro, float3 rd, float tExit, float amp, float width, float3x3 M, float R, float dither, float flow, float3 c1, float3 c2, float3 c3) {
+float3 lf_march(float3 ro, float3 rd, float tExit, float amp, float width, float3x3 M, float R, float dither, float flow, float3 c1, float3 c2, float3 c3, float split, float3 a1, float3 a2) {
     float3 col = float3(0.0);
     const int STEPS = 48;
     float dt = tExit / float(STEPS);
@@ -287,7 +292,11 @@ float3 lf_march(float3 ro, float3 rd, float tExit, float amp, float width, float
         float r3 = lf_ribbon(q, float3(-0.6, 0.5, 0.6), float3(0.5, -0.3, 1.0), float3(0.0, 1.0, 0.4), float3(0.8, 0.6, 0.0), 4.2, amp * 1.1, 1.15, width * 0.9, flow);
         float depth = clamp(length(q), 0.0, 1.0);
         float3 tint = mix(float3(0.92, 0.94, 1.0), float3(1.0), depth);
-        col += ((c1 + 0.7 * r1) * r1 + (c2 + 0.7 * r2) * r2 + (c3 + 0.8 * r3) * r3) * tint;
+        // Muxpane split: past a seam turning with the ribbons they take the accent
+        float w = split * smoothstep(-0.08, 0.08, q.x + 0.15 * sin(q.y * 3.0 + flow * 0.5));
+        float3 deep = a1 * 1.35 - 0.12;
+        float wh = 1.0 - 0.75 * w;
+        col += ((mix(c1, deep, w) + 0.7 * wh * r1) * r1 + (mix(c2, deep, w) + 0.7 * wh * r2) * r2 + (mix(c3, a2, w) + 0.8 * wh * r3) * r3) * tint;
     }
     return col * dt;
 }
@@ -323,7 +332,7 @@ if (h < 0.0) {
         float3 rr = refract(rd, n, eta);
         float bb = dot(pIn, rr);
         float tOut = -bb + sqrt(max(0.0, bb * bb - (dot(pIn, pIn) - R * R)));
-        float3 sm = lf_march(pIn, rr, tOut, amp, width, M, R, dither, u_flow, u_c1, u_c2, u_c3);
+        float3 sm = lf_march(pIn, rr, tOut, amp, width, M, R, dither, u_flow, u_c1, u_c2, u_c3, u_mode, u_a1, u_a2);
         inner[k] = sm[k];
     }
     inner *= bright * 2.6;
@@ -337,6 +346,7 @@ if (h < 0.0) {
     float rimR = pow(1.0 - max(0.0, dot(lf_wobble(normalize(pIn), u_level * 1.02, u_t, u_glass), -rd)), 5.0);
     float rimB = pow(1.0 - cosI, 3.6);
     float3 rimCol = normalize(u_c1 + u_c2 + 0.001) * 1.1;
+    if (u_mode > 0.5) { rimCol = normalize(u_a1 + u_c1 * 0.4 + 0.001) * 1.1; }
     rimCol = mix(rimCol, float3(1.0, 0.72, 0.3), u_lock);
     float3 rim = float3(rimCol.r * rimR, rimCol.g * fres, rimCol.b * rimB) * (0.7 + 0.8 * u_pulse + 0.4 * lv) * (0.4 + 1.0 * u_glass);
     float edgeDark = smoothstep(0.55, 0.85, fres) * (1.0 - smoothstep(0.85, 1.0, fres)) * u_glass;
@@ -414,6 +424,7 @@ class EnergySphere:
         self._f("u_glass", config["glass"])
         self._f("u_dark", 1.0)
         self._f("u_lock", 0.0)
+        self.set_split(None)
         parent.addSubview_(self.view)
 
     def _f(self, key, value):
@@ -425,6 +436,17 @@ class EnergySphere:
             self.mat.setValue_forKey_(
                 NSValue.valueWithSCNVector3_(SK.SCNVector3(r, g, b)),
                 f"u_c{i + 1}")
+
+    def set_split(self, accent):
+        """Muxpane's split look in the accent {"accent": hue, "sat": s}, or
+        None for Sorph's own orb."""
+        self._f("u_mode", 0.0 if accent is None else 1.0)
+        hue = 0.0 if accent is None else accent["accent"]
+        sat = 0.0 if accent is None else accent["sat"]
+        for key, h, light in (("u_a1", hue, 0.6), ("u_a2", (hue + 18) % 360, 0.72)):
+            r, g, b = _hsl(h, sat, light)
+            self.mat.setValue_forKey_(
+                NSValue.valueWithSCNVector3_(SK.SCNVector3(r, g, b)), key)
 
     def set_dark(self, dark):
         self._f("u_dark", 1.0 if dark else 0.0)
@@ -891,8 +913,7 @@ class Overlay(NSObject):
     def _set_muxpane(self, on):
         if self.view.surface is None:
             return
-        config = MUXPANE_ENERGY if on else ENERGY
-        self.view.surface.set_colors(config["hues"], config["sat"])
+        self.view.surface.set_split(MUXPANE_ENERGY if on else None)
 
     @objc.python_method
     def _set_note(self, text):

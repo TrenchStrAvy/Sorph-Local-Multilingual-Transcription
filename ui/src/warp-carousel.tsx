@@ -72,7 +72,7 @@ export interface WarpCarouselProps {
   style?: React.CSSProperties;
 }
 
-const DEFAULT_FONT =
+export const DEFAULT_FONT =
   '"Inter", "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue", Arial, sans-serif';
 
 export const WARP_CAROUSEL_CARDS: WarpCard[] = [
@@ -397,7 +397,7 @@ function sizeForCap(ctx: CanvasRenderingContext2D, weight: number, family: strin
    showing new cards; Dictate and Translate, or light and dark, swap between the same few, so a card
    painted once at a size is reused. Cleared when a web font arrives, as the text would change. */
 const painted = new Map<string, HTMLCanvasElement>();
-function paintedCard(card: WarpCard, w: number, family: string): HTMLCanvasElement {
+export function paintedCard(card: WarpCard, w: number, family: string): HTMLCanvasElement {
   const key = `${w}|${family}|${JSON.stringify(card)}`;
   let cv = painted.get(key);
   if (cv) {

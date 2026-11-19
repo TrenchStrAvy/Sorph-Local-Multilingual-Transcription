@@ -45,6 +45,7 @@ import mics
 import muxpane
 import settings
 import speech
+import toast
 import tone
 import translate
 
@@ -415,6 +416,7 @@ class FlowApp:
         self.ducker = ducking.Ducker()
         self.ducker.recover()
         self.overlay = overlay
+        self.toast = None           # the language card; set with the overlay
         self.recording = False
         self.locked = False
         self._hotkey_down = False
@@ -612,7 +614,11 @@ class FlowApp:
         settings.set_language(code)
         self.language = code
         if self.overlay:
-            self.overlay.set_note(self._note(languages.native_name(code)))
+            # the language card in the middle says which; no word under the orb
+            self.overlay.set_note(self._note())
+        if getattr(self, "toast", None) is not None:
+            # big, in the middle of the screen: the note under the orb is hard to see
+            self.toast.show(code, self.translate_to or "")
         if self.menubar:
             self.menubar.set_language(code)
             self.menubar.set_status("loading model…")
@@ -671,6 +677,8 @@ class FlowApp:
             return
         if key == HOTKEY:
             self._hotkey_down = False
+            if getattr(self, "toast", None) is not None:
+                self.toast.hide()           # the language is picked: close it
             if self.recording and not self.locked:
                 self._stop_recording()
 
@@ -1416,6 +1424,9 @@ def run_with_ui(args, language, lock):
     def _ready(app):
         app._lock = lock
         app.overlay = overlay
+        # the language picked with the quick keys, in the middle of the screen
+        app.toast = toast.Toast.alloc().init()
+        app.toast.prepare()             # the card's page loads ahead of the first pick
         overlay.level_source = lambda: app.recorder.level
         app.menubar = create_menubar(
             app.status_text(), app.language, app.set_language,

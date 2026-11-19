@@ -4,7 +4,8 @@
   "description": "Sorph's dashboard, shown in a web view by dashboard.py. Built once into dist/; installs need no Node.",
   "scripts": {
     "build": "esbuild src/app.tsx --bundle --minify --format=iife --target=safari15 --jsx=automatic --define:process.env.NODE_ENV='\"production\"' --outfile=dist/dashboard.js",
-    "build:site": "esbuild src/site-intro.ts --bundle --minify --format=iife --target=safari15 --outfile=../docs/intro.js"
+    "build:site": "esbuild src/site-intro.ts --bundle --minify --format=iife --target=safari15 --outfile=../docs/intro.js",
+    "build:card": "esbuild src/language-card.ts --bundle --minify --format=iife --target=safari15 --jsx=automatic --define:process.env.NODE_ENV='\"production\"' --outfile=dist/language-card.js"
   },
   "dependencies": {
     "react": "18.3.1",

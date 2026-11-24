@@ -59,11 +59,19 @@ class DashboardTests(unittest.TestCase):
         d._ready()
         self.assertTrue(d.state()["peek"])
         self.assertFalse(d.window.hasShadow())
-        self.assertTrue(d.window.standardWindowButton_(0).isHidden())
+        # no title bar, so macOS draws no rim round the cards; still clickable
+        self.assertEqual(d.window.styleMask(), self.dashboard.BORDERLESS)
+        self.assertTrue(d.window.canBecomeKeyWindow())
+        frame = d.window.frame()
         d.handle({"type": "engage"})        # a card or a field was touched
         self.assertFalse(d.peek)
         self.assertFalse(d.state()["peek"])
+        self.assertEqual(d.window.styleMask(), self.dashboard.WINDOW_MASK)
+        self.assertEqual(d.window.frame(), frame)       # did not move
         self.assertFalse(d.window.standardWindowButton_(0).isHidden())
+        self.assertTrue(d.window.standardWindowButton_(2).isHidden())
+        size = d.window.contentView().frame().size
+        self.assertEqual((size.width, size.height), (830, 420))
 
     def test_peek_closes_itself_and_the_next_open_is_full(self) -> None:
         d = self.dash
@@ -73,6 +81,7 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(d.window.isVisible())
         self.assertFalse(d.peek)
         self.assertTrue(d.window.hasShadow())
+        self.assertEqual(d.window.styleMask(), self.dashboard.WINDOW_MASK)
 
     def test_opened_from_the_menu_bar_is_never_a_peek(self) -> None:
         d = self.dash

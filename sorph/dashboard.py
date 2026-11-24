@@ -162,6 +162,26 @@ class Grip(NSView):
         return True                     # drag without activating first
 
 
+# titled, closable, miniaturizable, full-size content view: fixed size, not
+# resizable. The startup peek drops all of it (BORDERLESS): any window with
+# a title bar gets a thin rim drawn round its edge by macOS, even with a
+# clear background and no shadow, and the peek is only cards over the desktop.
+WINDOW_MASK = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 15)
+BORDERLESS = 0
+
+
+class SorphWindow(NSWindow):
+    """The dashboard's window. Borderless during the peek, it still takes
+    keys and clicks like a normal window (a borderless NSWindow refuses
+    them), so the fields and menus under the cards keep working."""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return True
+
+
 class Dashboard(NSObject, protocols=[
         objc.protocolNamed("WKScriptMessageHandler")]):
 
@@ -185,20 +205,17 @@ class Dashboard(NSObject, protocols=[
 
     @objc.python_method
     def _build(self):
-        mask = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 15)  # titled, closable,
-        # miniaturizable, full-size content view: fixed size, not resizable
         self.window = (
-            NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-                NSMakeRect(0, 0, W, H), mask, NSBackingStoreBuffered, False))
+            SorphWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                NSMakeRect(0, 0, W, H), WINDOW_MASK, NSBackingStoreBuffered,
+                False))
         w = self.window
         w.setTitle_("Sorph")
         w.setTitlebarAppearsTransparent_(True)
         w.setTitleVisibility_(1)                    # hidden
         w.setReleasedWhenClosed_(False)
         w.setDelegate_(self)
-        zoom = w.standardWindowButton_(2)           # the green button
-        if zoom is not None:
-            zoom.setHidden_(True)
+        self._hide_zoom()
         w.center()
 
         config = WKWebViewConfiguration.alloc().init()
@@ -452,9 +469,32 @@ class Dashboard(NSObject, protocols=[
                                                   NSRunLoopCommonModes)
 
     @objc.python_method
-    def _chrome(self, on: bool):
-        """The window's own look: buttons, frame, shadow (off for the peek)."""
+    def _hide_zoom(self):
+        zoom = self.window.standardWindowButton_(2)     # the green button
+        if zoom is not None:
+            zoom.setHidden_(True)
+
+    @objc.python_method
+    def _frame(self, on: bool):
+        """Title bar and rim on or off, the window staying where it is."""
         w = self.window
+        mask = WINDOW_MASK if on else BORDERLESS
+        if w.styleMask() == mask:
+            return
+        frame = w.frame()
+        w.setStyleMask_(mask)
+        w.setFrame_display_(frame, True)
+        if on:
+            w.setTitlebarAppearsTransparent_(True)
+            w.setTitleVisibility_(1)                    # hidden
+            self._hide_zoom()
+
+    @objc.python_method
+    def _chrome(self, on: bool):
+        """The window's own look: title bar, rim, buttons, shadow (all off
+        for the peek)."""
+        w = self.window
+        self._frame(on)
         for kind in (0, 1):                     # close, minimise
             button = w.standardWindowButton_(kind)
             if button is not None:
@@ -504,6 +544,11 @@ class Dashboard(NSObject, protocols=[
         self.peek = False
         w = self.window
         w.setAlphaValue_(1.0)
+        self._frame(True)               # buttons to fade in (hidden for now)
+        for kind in (0, 1):
+            button = w.standardWindowButton_(kind)
+            if button is not None:
+                button.setAlphaValue_(0.0)
         w.setHasShadow_(True)
         self._push()                    # the page starts its fade
         buttons = [b for b in (w.standardWindowButton_(0),

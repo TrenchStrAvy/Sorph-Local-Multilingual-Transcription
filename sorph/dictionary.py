@@ -42,6 +42,72 @@ def hotwords(entries) -> str:
     return " ".join(out)
 
 
+def _norm(word: str) -> str:
+    return re.sub(r"[\W_]+", "", word, flags=re.UNICODE).lower()
+
+
+def echo_start(text: str, hint: str):
+    """Where a possible read-back of the hint begins in `text`, or None.
+
+    The hint is fed to Whisper as if it were text said just before; on a
+    breath or a pause the decoder sometimes carries on by copying it
+    ("... take me to the... Sorph Singe CySA"). That copy is a trailing
+    run of hint words in the hint's own order. Whether the user really
+    said them is for the audio to tell (see heard_again)."""
+    hint_words = [_norm(w) for w in hint.split()]
+    norm = [_norm(w) for w in text.split()]
+    if not hint_words or not norm:
+        return None
+    found = None
+    for start in range(len(norm) - 1, -1, -1):
+        run = norm[start:]
+        if not any(hint_words[i:i + len(run)] == run
+                   for i in range(len(hint_words) - len(run) + 1)):
+            break
+        found = start
+    return found
+
+
+# How much what the plain decode heard must look like the dictionary words.
+# After other speech an echo leaves nothing in the plain decode, so a loose
+# likeness will do: spoken "Sorph" comes out "Swarf" (0.4), "Singe" as
+# "Cinch" (0.4). A segment of nothing but dictionary words is stricter, as
+# a breath alone can make Whisper invent "Thanks for watching!" (0.45 to
+# "Sorph Singe CySA+"); spoken, they come out "Sorf Cinch" (0.53), "Soft
+# Singe" (0.74), "Soar" (0.67).
+HEARD_AFTER_SPEECH = 0.25
+HEARD_ALONE = 0.5
+
+
+def heard_again(text: str, start: int, plain: str) -> bool:
+    """Did a decode of the same audio without the hint (`plain`) also
+    hear the words of `text` from word `start` on?
+
+    `plain` is lined up with the words before `start`; whatever it has
+    beyond them is what the audio holds in the run's place. Without the
+    hint Whisper misspells the user's words ("SOARF" for "Sorph"), so
+    that rest only has to sound alike; an echo leaves no rest at all,
+    or nothing like the words."""
+    from difflib import SequenceMatcher
+    words = text.split()
+    before = [_norm(w) for w in words[:start]]
+    run = "".join(_norm(w) for w in words[start:])
+    heard = [_norm(w) for w in plain.split()]
+    heard = [w for w in heard if w]
+    rest = heard[len(before):]
+    if before:
+        blocks = [b for b in SequenceMatcher(None, before, heard,
+                                             autojunk=False)
+                  .get_matching_blocks() if b.size]
+        if blocks:
+            rest = heard[blocks[-1].b + blocks[-1].size:]
+    rest = "".join(rest)
+    if not rest or not run:
+        return False
+    need = HEARD_AFTER_SPEECH if before else HEARD_ALONE
+    return SequenceMatcher(None, run, rest, autojunk=False).ratio() >= need
+
+
 def _pattern(phrase: str):
     words = [re.escape(w) for w in phrase.split()]
     return re.compile(r"(?<![\w'’])" + r"\s+".join(words) + r"(?![\w'’])",

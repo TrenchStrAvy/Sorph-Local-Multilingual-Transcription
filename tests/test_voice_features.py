@@ -95,6 +95,51 @@ class DictionaryTests(unittest.TestCase):
                              "in TMUX", self.ENTRIES),
             "run Ollama, then Ollama and the Terraform in tmux")
 
+    HINT = "Sorph Singe CySA+ CompTIA Avy"
+
+    def test_echo_start_finds_a_trailing_run_in_hint_order(self) -> None:
+        said = "it should take me to the..."
+        self.assertEqual(dictionary.echo_start(
+            said + " Sorph Singe CySA", self.HINT), 6)
+        self.assertEqual(dictionary.echo_start("Sorph Singe CySA+.",
+                                               self.HINT), 0)
+        self.assertEqual(dictionary.echo_start("I opened Sorph", self.HINT),
+                         2)
+        for text in ["the CompTIA CySA+ exam", "Sorph is great", ""]:
+            self.assertIsNone(dictionary.echo_start(text, self.HINT))
+        self.assertIsNone(dictionary.echo_start("Sorph Singe", ""))
+
+    def test_an_echo_is_not_heard_again(self) -> None:
+        text = "it should take me to the... Sorph Singe CySA"
+        # the audio without the hint: the sentence, then nothing
+        self.assertFalse(dictionary.heard_again(
+            text, 6, "It should take me to the..."))
+        # a breath alone: nothing, or Whisper's stock invention
+        self.assertFalse(dictionary.heard_again("Sorph Singe CySA+.", 0, ""))
+        self.assertFalse(dictionary.heard_again(
+            "Sorph Singe CySA+.", 0, "Thanks for watching!"))
+
+    def test_spoken_words_are_heard_again(self) -> None:
+        # what small.en and base write for these words without the hint
+        self.assertTrue(dictionary.heard_again(
+            "I opened Sorph this", 2, "I opened SOARF this"))
+        self.assertTrue(dictionary.heard_again(
+            "I opened Sorph", 2, "I opened SOARF."))
+        self.assertTrue(dictionary.heard_again("Sorph Singe", 0,
+                                               "Sorf Cinch"))
+        self.assertTrue(dictionary.heard_again("Sorph Singe", 0,
+                                               "Soft Singe."))
+        self.assertTrue(dictionary.heard_again(
+            "the exam for CompTIA CySA+", 3, "the exam for CompTIA SISA Plus"))
+        self.assertTrue(dictionary.heard_again(
+            "Tell Avy to check Sorph.", 4, "Tell Abby to check, Swarf."))
+        self.assertTrue(dictionary.heard_again("OpenSorph Singe", 1,
+                                               "OpenSorf Cinch."))
+        self.assertTrue(dictionary.heard_again("Sorph.", 0, "Soar."))
+        # after speech, a stray word that is nothing like them is no proof
+        self.assertFalse(dictionary.heard_again(
+            "take me to the Sorph Singe CySA", 4, "Take me to the... you"))
+
     def test_whole_words_only(self) -> None:
         self.assertEqual(dictionary.apply("Olamas platform", self.ENTRIES),
                          "Olamas platform")
@@ -174,10 +219,16 @@ class Segment:
 
 
 class FakeModel:
-    def __init__(self, segments):
-        self.segments, self.options = segments, None
+    """Gives `segments`; a decode without the hint gives `plain`."""
+
+    def __init__(self, segments, plain=None):
+        self.segments, self.plain, self.options = segments, plain, None
+        self.calls = 0
 
     def transcribe(self, audio, **options):
+        self.calls += 1
+        if "hotwords" not in options and self.plain is not None:
+            return iter(self.plain), None
         self.options = options
         return iter(self.segments), None
 
@@ -202,9 +253,9 @@ class TranscriberFilterTests(unittest.TestCase):
         import settings
         self.flow.settings = importlib.reload(settings)
 
-    def _transcriber(self, segments):
+    def _transcriber(self, segments, plain=None):
         t = self.flow.Transcriber.__new__(self.flow.Transcriber)
-        t.model = FakeModel(segments)
+        t.model = FakeModel(segments, plain)
         t.language, t.decode = "en", {}
         import threading
         t._switch = threading.RLock()
@@ -250,6 +301,32 @@ class TranscriberFilterTests(unittest.TestCase):
         self.assertEqual(t.model.options["hotwords"], "Ollama")
         self.assertEqual(t.model.options["max_new_tokens"],
                          3 * self.flow.TOKENS_PER_SEC + 16)
+
+
+    def test_hint_read_back_on_a_breath_is_dropped(self) -> None:
+        for w in ["Sorph", "Singe", "CySA+"]:
+            self.settings.add_dictionary(w)
+        t = self._transcriber(
+            [Segment("take me to the... Sorph Singe CySA", 1.1, 2.8)],
+            plain=[Segment("Take me to the...", 1.1, 2.6)])
+        self.assertEqual(t.transcribe(self._audio(), gate=0.05),
+                         "take me to the...")
+
+    def test_dictionary_words_said_are_kept(self) -> None:
+        for w in ["Sorph", "Singe", "CySA+"]:
+            self.settings.add_dictionary(w)
+        t = self._transcriber([Segment("open Sorph Singe", 1.1, 2.8)],
+                              plain=[Segment("Open Sorf Cinch.", 1.1, 2.8)])
+        self.assertEqual(t.transcribe(self._audio(), gate=0.05),
+                         "open Sorph Singe")
+
+    def test_no_second_decode_without_a_suspect_ending(self) -> None:
+        self.settings.add_dictionary("Sorph")
+        t = self._transcriber([Segment("Sorph is great", 1.1, 2.8)],
+                              plain=[])
+        self.assertEqual(t.transcribe(self._audio(), gate=0.05),
+                         "Sorph is great")
+        self.assertEqual(t.model.calls, 1)
 
 
 class NewSettingsTests(unittest.TestCase):

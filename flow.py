@@ -266,8 +266,7 @@ class Transcriber:
                 # a decoder that runs away on noise stops early instead of
                 # writing (and timing) hundreds of invented tokens
                 options["max_new_tokens"] = int(seconds * TOKENS_PER_SEC) + 16
-        segments, _ = model.transcribe(
-            audio,
+        base = dict(
             vad_filter=True,          # trim silence before decoding
             vad_parameters={"min_silence_duration_ms": 300},
             beam_size=1,              # greedy: fastest, fine for dictation
@@ -277,8 +276,8 @@ class Transcriber:
             condition_on_previous_text=False,  # no cross-segment context
             language=language,
             task=task,
-            **options,
         )
+        segments, _ = model.transcribe(audio, **base, **options)
         # Segments the decoder made up are dropped (see
         # cleanup.plausible_segment); a loop ("the the the"), inside one
         # segment or spread over several, is cut at the first repeat.
@@ -291,11 +290,38 @@ class Transcriber:
                 voiced = bool(np.any(rms[a:max(b, a + 1)] > gate))
             if cleanup.plausible_segment(s.avg_logprob, s.no_speech_prob,
                                          s.compression_ratio, voiced):
-                keep.append(cleanup.strip_repeats(s.text.strip()))
+                seg = s.text.strip()
+                if hotwords:
+                    seg, audio = self._drop_echo(model, audio, s, seg,
+                                                 hotwords, base)
+                keep.append(cleanup.strip_repeats(seg))
         text = cleanup.strip_repeats(" ".join(t for t in keep if t).strip())
         if seconds is not None and not cleanup.plausible_length(text, seconds):
             return ""
         return dictionary.apply(text, entries)
+
+    @staticmethod
+    def _drop_echo(model, audio, segment, text, hotwords, base):
+        """`text` without the hint read back where nobody said it.
+
+        When a segment ends in dictionary words, in the order Whisper was
+        given them, the segment's audio is decoded once more without the
+        hint: words the user said are still heard there (misspelled), an
+        echo of the hint is not. Returns the text and the audio as
+        samples, so a file is only read once."""
+        start = dictionary.echo_start(text, hotwords)
+        if start is None:
+            return text, audio
+        if not isinstance(audio, np.ndarray):
+            from faster_whisper import decode_audio
+            audio = decode_audio(audio, sampling_rate=SAMPLE_RATE)
+        a = max(0, int((segment.start - 0.3) * SAMPLE_RATE))
+        b = min(len(audio), int((segment.end + 0.3) * SAMPLE_RATE))
+        plain_segments, _ = model.transcribe(audio[a:b], **base)
+        plain = " ".join(p.text.strip() for p in plain_segments)
+        if dictionary.heard_again(text, start, plain):
+            return text, audio
+        return " ".join(text.split()[:start]), audio
 
 
 # ---------------------------------------------------------------- stage 2: cleanup

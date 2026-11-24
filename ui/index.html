@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="light" class="booting">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=830, height=420">
@@ -25,6 +25,9 @@
   /* the startup peek: no page and no header, only the cards and the language
      bar over the desktop; touched, everything fades in together */
   html.peek body { background: transparent; }
+  /* while the models load the look is set once and never fades: the reveal
+     under the caption switches at once, and the page has to as well */
+  html.booting body { transition: none; }
   .bar-top > * { transition: opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
   html.peek .bar-top > * { opacity: 0; pointer-events: none; }
   button, select, input { font: inherit; color: inherit; }

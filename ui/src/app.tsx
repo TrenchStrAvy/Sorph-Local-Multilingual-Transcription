@@ -333,9 +333,13 @@ function Splash({ state }: { state: State }) {
 
 function App() {
   const state = useSorph();
-  React.useEffect(() => {
+  // before the paint, so a change of look and the page never disagree
+  React.useLayoutEffect(() => {
     document.documentElement.dataset.theme = state.dark ? "dark" : "light";
   }, [state.dark]);
+  React.useLayoutEffect(() => {
+    document.documentElement.classList.toggle("booting", state.phase !== "ready");
+  }, [state.phase]);
   React.useEffect(() => {
     document.documentElement.classList.toggle("peek", !!state.peek);
   }, [state.peek]);

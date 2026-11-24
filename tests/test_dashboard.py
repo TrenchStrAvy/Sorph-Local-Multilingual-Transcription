@@ -83,6 +83,16 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(d.window.hasShadow())
         self.assertEqual(d.window.styleMask(), self.dashboard.WINDOW_MASK)
 
+    def test_the_page_knows_its_look_before_it_draws(self) -> None:
+        dark = self.dashboard.boot_script(True)
+        self.assertIn('dataset.theme = "dark"', dark)
+        self.assertIn("dark: true", dark)
+        self.assertIn('dataset.theme = "light"',
+                      self.dashboard.boot_script(False))
+        scripts = self.dash.web.configuration().userContentController(
+            ).userScripts()
+        self.assertEqual(len(scripts), 1)
+
     def test_opened_from_the_menu_bar_is_never_a_peek(self) -> None:
         d = self.dash
         d._ready()                          # not shown at startup

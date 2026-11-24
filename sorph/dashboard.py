@@ -45,7 +45,8 @@ from Foundation import (NSDistributedNotificationCenter, NSMakeRect, NSObject,
                         NSRunLoop, NSRunLoopCommonModes, NSTimer, NSURL)
 from PyObjCTools import AppHelper
 from Quartz import CAMediaTimingFunction
-from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
+from WebKit import (WKUserContentController, WKUserScript, WKWebView,
+                    WKWebViewConfiguration)
 
 import languages
 import mics
@@ -75,6 +76,15 @@ def system_is_dark() -> bool:
         return name == "NSAppearanceNameDarkAqua"
     except Exception:
         return False
+
+
+def boot_script(dark: bool) -> str:
+    """Run before the page: its theme and first state, so the first frame
+    is already in the right look."""
+    return ("document.documentElement.dataset.theme = %s;"
+            "window.sorph = {state: {dark: %s}, push: function (s) {"
+            " Object.assign(this.state, s); }};"
+            % (json.dumps("dark" if dark else "light"), json.dumps(dark)))
 
 
 def is_dark() -> bool:
@@ -221,6 +231,11 @@ class Dashboard(NSObject, protocols=[
         config = WKWebViewConfiguration.alloc().init()
         controller = WKUserContentController.alloc().init()
         controller.addScriptMessageHandler_name_(self, "sorph")
+        # the page's look before it draws anything: it starts light, and a
+        # dark Mac would see it fade to dark under the startup reveal
+        controller.addUserScript_(
+            WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
+                boot_script(is_dark()), 0, True))   # at document start
         config.setUserContentController_(controller)
         self.web = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, W, H), config)

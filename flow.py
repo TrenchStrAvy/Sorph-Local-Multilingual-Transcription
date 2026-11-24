@@ -651,10 +651,7 @@ class FlowApp:
         if not text and self._route():
             text = (f"{languages.native_name(self.transcriber.language)} → "
                     f"{translate.native_name(self.translate_to)}")
-        # dictating to a Muxpane agent: the caption says which one
-        target = getattr(self, "muxpane_target", None)
-        if target:
-            text = (text + "  " if text else "") + muxpane.caption(target)
+        # (dictating to a Muxpane agent: the card above the orb says which)
         return ("🔒 " + text).strip() if self.locked else text
 
     # -- hotkey handlers (must return fast; heavy work goes to the worker)
@@ -707,7 +704,8 @@ class FlowApp:
                     and not self.target.editable)
         self.recorder.start()
         if self.overlay:
-            self.overlay.set_muxpane(self.muxpane_target is not None)
+            # a Muxpane agent: the orb splits pink and the card names it
+            self.overlay.set_muxpane(self.muxpane_target)
             self.overlay.set_note(self._note())
             self.overlay.show_recording()
         if self.typer is not None:
@@ -1043,14 +1041,20 @@ class FlowApp:
                 self._type_lock.release()
             self.recorder.release()     # the microphone held for Muxpane
 
-    @staticmethod
-    def _to_muxpane(target, text):
+    def _to_muxpane(self, target, text):
+        overlay = getattr(self, "overlay", None)
+        if overlay:
+            overlay.set_send("sending")
         if muxpane.deliver(target, text):
             print(f"  → muxpane: {target['name']} {target['pane']}", flush=True)
+            if overlay:
+                overlay.set_send("sent")     # the card says so a moment longer
         elif text.strip():
             # Muxpane went away meanwhile: keep the words for the user
             subprocess.run(["pbcopy"], input=text.encode())
             print("  (muxpane unreachable; copied to clipboard)", flush=True)
+            if overlay:
+                overlay.set_send("kept")
 
     @staticmethod
     def _learn_voice(audio):
@@ -1435,6 +1439,11 @@ def run_with_ui(args, language, lock):
         app.overlay = overlay
         # the language picked with the quick keys, in the middle of the screen
         app.toast = toast.Toast.alloc().init()
+        # Muxpane's fn N twice: the pink orb and its card show at once,
+        # waiting for the key (not while a dictation is under way)
+        app.ask_watch = muxpane.watch_asks(
+            lambda target: None if app.recording else overlay.show_ask(target),
+            lambda: None if app.recording else overlay.end_ask())
         app.toast.prepare()             # the card's page loads ahead of the first pick
         overlay.level_source = lambda: app.recorder.level
         app.menubar = create_menubar(

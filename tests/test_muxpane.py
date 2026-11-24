@@ -113,15 +113,16 @@ class RecordingTests(HandoffFolder):
         self._start(app)
         self.assertEqual(app._preview_state["preview"], "card")   # never typed in front
         self.assertEqual(app._preview_state["muxpane"], {"pane": "%7", "name": "Slate"})
-        app.overlay.set_muxpane.assert_called_with(True)
-        app.overlay.set_note.assert_called_with("→ Slate · %7")
+        # the orb splits and the card above it names the agent; nothing under the orb
+        app.overlay.set_muxpane.assert_called_with({"pane": "%7", "name": "Slate"})
+        app.overlay.set_note.assert_called_with("")
 
     def test_without_a_target_sorph_types_as_always(self) -> None:
         app = self._app()
         self._start(app)
         self.assertEqual(app._preview_state["preview"], "inline")
         self.assertIsNone(app._preview_state["muxpane"])
-        app.overlay.set_muxpane.assert_called_with(False)
+        app.overlay.set_muxpane.assert_called_with(None)
 
 
 if __name__ == "__main__":

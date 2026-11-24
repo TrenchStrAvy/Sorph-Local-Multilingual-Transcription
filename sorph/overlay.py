@@ -46,12 +46,14 @@ from AppKit import (
     NSWindowStyleMaskBorderless,
 )
 from Foundation import (NSMakePoint, NSMakeRect, NSMakeSize, NSNumber,
-                        NSObject, NSString, NSTimer, NSValue)
+                        NSObject, NSRunLoop, NSRunLoopCommonModes, NSString,
+                        NSTimer, NSValue)
 from Quartz import (CGContextSetLineCap, CGContextSetLineWidth,
                     CGContextSetRGBStrokeColor, CGContextStrokeLineSegments,
                     kCGLineCapRound)
 from PyObjCTools import AppHelper
 
+import card as card_mod
 import settings
 
 try:
@@ -70,6 +72,7 @@ CORNER_RADIUS = 14
 WIN_W = CARD_W
 WIN_H = PILL_H + CARD_GAP + 2 * CARD_PAD + int(CARD_LINES * CARD_FONT * 1.5)
 TICK_SEC = 1 / 60             # animation frame rate
+ASK_SEC = 95                  # an ask from Muxpane (it withdraws it after 90 s)
 LEVEL_GAIN = 16.0             # scales mic RMS (~0.02-0.3 for speech)
 
 # --- particle sphere ("Ripple"): a cloud of points on a sphere. Every
@@ -470,8 +473,7 @@ class PillView(NSView):
             return None
         self.state = "recording"
         self.note = ""           # e.g. language name after a Q/W/E switch
-        self.words = []          # [(word, style)] for the transcript card
-        self._card_text = None   # cached, trimmed NSAttributedString
+        self.muxpane = False     # the card above says where it goes and how far
         self.smoothed = 0.0
         self.t = 0.0
         self.rot_y = 0.0
@@ -559,71 +561,6 @@ class PillView(NSView):
         self.state = state
         self.setNeedsDisplay_(True)
 
-    def set_words(self, words):
-        self.words = list(words)
-        self._card_text = None
-        self.setNeedsDisplay_(True)
-
-    @objc.python_method
-    def _card_attrs(self, style, ink):
-        para = NSMutableParagraphStyle.alloc().init()
-        para.setLineBreakMode_(0)           # word wrap
-        attrs = {
-            NSFontAttributeName: NSFont.systemFontOfSize_(CARD_FONT),
-            NSParagraphStyleAttributeName: para,
-        }
-        if style == "removed":
-            attrs[NSForegroundColorAttributeName] = \
-                NSColor.colorWithCalibratedWhite_alpha_(ink, 0.35)
-            attrs[NSStrikethroughStyleAttributeName] = NSUnderlineStyleSingle
-        elif style == "changed":
-            attrs[NSForegroundColorAttributeName] = \
-                NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                    1.0, 0.85, 0.45, 1.0)        # warm highlight
-        elif style == "dim":
-            attrs[NSForegroundColorAttributeName] = \
-                NSColor.colorWithCalibratedWhite_alpha_(ink, 0.45)
-        else:
-            attrs[NSForegroundColorAttributeName] = \
-                NSColor.colorWithCalibratedWhite_alpha_(ink, 0.95)
-        return attrs
-
-    @objc.python_method
-    def _build_card_text(self, width, max_h, ink):
-        """Attributed transcript, dropping leading words until the last
-        CARD_LINES lines fit. Cached until the words change."""
-        if self._card_text is not None:
-            return self._card_text
-        words = self.words
-        size = NSMakeSize(width, 10_000)
-        opts = NSStringDrawingUsesLineFragmentOrigin
-
-        def build(start):
-            text = NSMutableAttributedString.alloc().init()
-            for k, (word, style) in enumerate(words[start:]):
-                piece = (" " if k else "") + word
-                text.appendAttributedString_(
-                    NSAttributedString.alloc().initWithString_attributes_(
-                        piece, self._card_attrs(style, ink)))
-            return text
-
-        def fits(start):
-            return build(start).boundingRectWithSize_options_(
-                size, opts).size.height <= max_h
-
-        # smallest start (most words) that still fits: binary search
-        lo, hi = 0, max(0, len(words) - 1)
-        if not fits(0):
-            while lo < hi:
-                mid = (lo + hi) // 2
-                if fits(mid):
-                    hi = mid
-                else:
-                    lo = mid + 1
-        text = build(lo)
-        self._card_text = text
-        return text
-
     def push_level(self, level):
         """Called every tick: advance the physics by real elapsed time."""
         now = time.monotonic()
@@ -631,7 +568,7 @@ class PillView(NSView):
         self._last_tick = now
         self.t += dt
 
-        if self.state in ("transcribing", "cleaning"):
+        if self.state in ("transcribing", "cleaning", "ask"):
             target = 0.05 + 0.03 * math.sin(self.t * 2.2)   # calm breathing
         else:
             target = math.tanh(level * LEVEL_GAIN)           # 0..1
@@ -643,7 +580,7 @@ class PillView(NSView):
 
         # syllable onset → a drop; quiet speech gives fine rings
         if (target > ONSET_LEVEL and target > self.prev_level * ONSET_RISE
-                and self.state not in ("transcribing", "cleaning")):
+                and self.state not in ("transcribing", "cleaning", "ask")):
             self._drop(target)
         self.prev_level = target
         self.rings = [r for r in self.rings if self.t - r[0] < RING_LIFE]
@@ -666,9 +603,10 @@ class PillView(NSView):
         last, self._sphere_last = self._sphere_last, now
         dt = min(0.1, max(0.0, now - last)) if last is not None else 1 / 60
         self.sphere_t += dt
-        listening = self.state not in ("transcribing", "cleaning")
-        energy, pulse, speed = self.voice.step(
-            float(self.level_source()), dt, listening)
+        listening = self.state not in ("transcribing", "cleaning", "ask")
+        # asked by Muxpane, not yet speaking: the orb waits, the mic is not open
+        level = 0.0 if self.state == "ask" else float(self.level_source())
+        energy, pulse, speed = self.voice.step(level, dt, listening)
         wrap = 200 * math.pi      # every phase multiplier is a multiple of 1/100 turn
         self.sphere_t %= wrap
         self.flow = (self.flow + dt * speed) % wrap
@@ -678,9 +616,6 @@ class PillView(NSView):
     def drawRect_(self, rect):
         b = self.bounds()
         W, H = b.size.width, PILL_H
-        if self.words:
-            self._draw_card(b.size.width, b.size.height)
-
         ink = 1.0 if self.dark else 0.0
         ctx = NSGraphicsContext.currentContext()
         cg = ctx.CGContext()
@@ -738,8 +673,9 @@ class PillView(NSView):
             NSColor.colorWithCalibratedWhite_alpha_(ink, 0.5).setStroke()
             ring.stroke()
 
-        label = {"transcribing": "transcribing…",
-                 "cleaning": "cleaning up…"}.get(self.state, self.note)
+        label = self.note if self.muxpane else {
+            "transcribing": "transcribing…",
+            "cleaning": "cleaning up…"}.get(self.state, self.note)
         if label:
             attrs = {
                 NSFontAttributeName: NSFont.systemFontOfSize_(10),
@@ -751,29 +687,6 @@ class PillView(NSView):
             text.drawAtPoint_withAttributes_(
                 NSMakePoint((W - size.width) / 2, 6), attrs)
         ctx.restoreGraphicsState()
-
-    @objc.python_method
-    def _draw_card(self, W, H):
-        """Translucent dark card with the transcript, bottom-aligned so the
-        newest words sit just above the wave."""
-        ink = 0.97
-        inner_w = CARD_W - 2 * CARD_PAD
-        max_h = H - PILL_H - CARD_GAP - 2 * CARD_PAD
-        text = self._build_card_text(inner_w, max_h, ink)
-        th = min(max_h, text.boundingRectWithSize_options_(
-            NSMakeSize(inner_w, 10_000),
-            NSStringDrawingUsesLineFragmentOrigin).size.height)
-        card_h = th + 2 * CARD_PAD
-        y0 = PILL_H + CARD_GAP
-        card = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            NSMakeRect((W - CARD_W) / 2, y0, CARD_W, card_h),
-            CORNER_RADIUS, CORNER_RADIUS)
-        NSColor.colorWithCalibratedWhite_alpha_(0.08, 0.78).setFill()
-        card.fill()
-        text.drawWithRect_options_(
-            NSMakeRect((W - CARD_W) / 2 + CARD_PAD, y0 + CARD_PAD,
-                       inner_w, th),
-            NSStringDrawingUsesLineFragmentOrigin)
 
 
 class Overlay(NSObject):
@@ -804,6 +717,13 @@ class Overlay(NSObject):
             | NSWindowCollectionBehaviorStationary)
         self.window.setContentView_(self.view)
 
+        # the transcript card: its own window, always fully on screen
+        card_mod.PILL_TOP = PILL_H
+        self.card = card_mod.Card.alloc().init()
+        self.card.orb = self.window
+        self.asking = False      # Muxpane asked (fn N twice): card up, waiting for the key
+        self.ask_timer = None
+
         self._place(settings.get_position())
         return self
 
@@ -826,6 +746,7 @@ class Overlay(NSObject):
                 y = min(max(xy[1], f.origin.y - PILL_H + 40),
                         f.origin.y + f.size.height - 40)
                 self.window.setFrameOrigin_(NSMakePoint(x, y))
+                self.card.follow()
                 return
             position = settings.DEFAULT_POSITION
         x = {"left": f.origin.x + margin,
@@ -837,6 +758,7 @@ class Overlay(NSObject):
         else:
             y = f.origin.y + margin
         self.window.setFrameOrigin_(NSMakePoint(x, y))
+        self.card.follow()
 
     def set_position(self, position):
         """Move the sphere; safe from any thread."""
@@ -876,7 +798,7 @@ class Overlay(NSObject):
     def set_words(self, words):
         """Transcript card content: [(word, style)] with style in
         same | changed | removed | dim. Empty list hides the card."""
-        AppHelper.callAfter(self.view.set_words, words)
+        AppHelper.callAfter(self.card.set_words, words)
 
     def set_text(self, text, style="same"):
         self.set_words([(w, style) for w in text.split()])
@@ -888,18 +810,41 @@ class Overlay(NSObject):
         """Caption under the wave while recording (e.g. 'Deutsch')."""
         AppHelper.callAfter(self._set_note, text)
 
-    def set_muxpane(self, on):
-        """The orb in Muxpane's colours (this dictation goes to an agent) or
-        Sorph's own."""
-        AppHelper.callAfter(self._set_muxpane, bool(on))
+    def set_muxpane(self, target):
+        """This dictation goes to a Muxpane agent ({"name", "pane"}): the orb
+        splits in Muxpane's colours and the card says where the words go.
+        None: Sorph's own orb and card."""
+        if target and not isinstance(target, dict):
+            target = {"name": "muxpane", "pane": ""}
+        AppHelper.callAfter(self._set_muxpane, target or None)
+
+    def show_ask(self, target):
+        """Muxpane asks for an answer to an agent ({"name", "pane"}): the
+        pink orb and its card show now, idle, until Sorph's key goes down."""
+        AppHelper.callAfter(self._show_ask, dict(target))
+
+    def end_ask(self):
+        """Muxpane withdrew the ask. A dictation already under way stays."""
+        AppHelper.callAfter(self._end_ask)
+
+    def set_send(self, state):
+        """Muxpane card status: "sending", "sent", or "kept" (Muxpane was
+        gone; the words are on the clipboard)."""
+        AppHelper.callAfter(self.card.set_send, state)
 
     # -- main-thread implementations
 
     @objc.python_method
     def _show(self, state):
+        if self.asking:              # the key went down: the ask becomes the dictation
+            self.asking = False
+            if self.ask_timer is not None:
+                self.ask_timer.invalidate()
+                self.ask_timer = None
         if state == "recording":
-            self.view.set_words([])
+            self.card.set_words([])
         self.view.set_state(state)
+        self.card.set_state(state)
         if self.view.surface is not None:
             self.view.surface.set_playing(True)
         if self.timer is None:
@@ -910,10 +855,52 @@ class Overlay(NSObject):
         self.window.orderFrontRegardless()
 
     @objc.python_method
-    def _set_muxpane(self, on):
-        if self.view.surface is None:
+    def _show_ask(self, target):
+        if self.timer is not None and not self.asking:
+            return                   # a dictation is showing: it carries on
+        self.asking = True
+        self._set_muxpane(target)
+        self.view.set_state("ask")
+        self.card.set_state("ask")
+        if self.view.surface is not None:
+            self.view.surface.set_playing(True)
+        if self.timer is None:
+            self.timer = (
+                NSTimer.
+                scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    TICK_SEC, self, b"tick:", None, True))
+        self.window.orderFrontRegardless()
+        # Muxpane gives up after 90 s and says so; this is in case it can't
+        if self.ask_timer is not None:
+            self.ask_timer.invalidate()
+        self.ask_timer = NSTimer.timerWithTimeInterval_repeats_block_(
+            ASK_SEC, False, lambda _t: self._end_ask())
+        NSRunLoop.mainRunLoop().addTimer_forMode_(self.ask_timer, NSRunLoopCommonModes)
+
+    @objc.python_method
+    def _end_ask(self):
+        if self.ask_timer is not None:
+            self.ask_timer.invalidate()
+            self.ask_timer = None
+        if not self.asking:
             return
-        self.view.surface.set_split(MUXPANE_ENERGY if on else None)
+        self.asking = False
+        if self.view.state == "ask":
+            self._hide()
+
+    @objc.python_method
+    def _set_muxpane(self, target):
+        """Called as a dictation starts, before the orb shows."""
+        on = target is not None
+        self.view.muxpane = on
+        if (self.asking and on and self.card.view.target is not None
+                and self.card.view.target.get("pane") == target.get("pane")):
+            return                   # the card asked for this one is already up
+        self.card.begin()
+        self.card.set_target(target, accent=_hsl(
+            MUXPANE_ENERGY["accent"], MUXPANE_ENERGY["sat"], 0.62))
+        if self.view.surface is not None:
+            self.view.surface.set_split(MUXPANE_ENERGY if on else None)
 
     @objc.python_method
     def _set_note(self, text):
@@ -928,11 +915,15 @@ class Overlay(NSObject):
             self.timer = None
         if self.view.surface is not None:
             self.view.surface.set_playing(False)
-            self._set_muxpane(False)     # Sorph's own colours for the next one
+            self.view.surface.set_split(None)   # Sorph's own colours for the next one
+        self.view.muxpane = False
+        self.card.hide()             # a sent message lingers a moment
         self.window.orderOut_(None)
 
     def tick_(self, _timer):
         self.view.push_level(float(self.level_source()))
+        if self.moving:
+            self.card.follow()       # dragged: the card comes along
 
 
 def create_overlay(level_source):

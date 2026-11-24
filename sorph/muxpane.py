@@ -118,3 +118,55 @@ def deliver(target, text: str) -> bool:
         except OSError:
             pass
         return False
+
+
+# -- Muxpane asks (fn N twice): show the card now, before the key goes down
+
+ASK = "app.muxpane.MuxpaneAsk"
+ASK_END = "app.muxpane.MuxpaneAskEnd"
+
+
+def ask_target(info):
+    """The {"name", "pane"} of an ask notification's userInfo, or None."""
+    try:
+        pane, name = info.get("pane"), info.get("name")
+    except AttributeError:
+        return None
+    if not (pane and name):
+        return None
+    return {"pane": str(pane), "name": str(name)}
+
+
+_Watcher = None
+
+
+def _watcher_class():
+    """The Cocoa observer class, made once (Objective-C class names are
+    global, so it cannot be defined again)."""
+    global _Watcher
+    if _Watcher is None:
+        from Foundation import NSObject
+
+        class MuxpaneAskWatcher(NSObject):
+            def asked_(self, note):
+                target = ask_target(note.userInfo() or {})
+                if target is not None:
+                    self.on_ask(target)
+
+            def ended_(self, _note):
+                self.on_end()
+
+        _Watcher = MuxpaneAskWatcher
+    return _Watcher
+
+
+def watch_asks(on_ask, on_end):
+    """Calls on_ask(target) / on_end() on the main thread when Muxpane asks
+    for an answer or withdraws it. Keep the returned object alive."""
+    from Foundation import NSDistributedNotificationCenter
+    watcher = _watcher_class().alloc().init()
+    watcher.on_ask, watcher.on_end = on_ask, on_end
+    center = NSDistributedNotificationCenter.defaultCenter()
+    center.addObserver_selector_name_object_(watcher, b"asked:", ASK, None)
+    center.addObserver_selector_name_object_(watcher, b"ended:", ASK_END, None)
+    return watcher
